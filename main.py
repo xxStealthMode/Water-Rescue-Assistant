@@ -126,7 +126,7 @@ async def query_perplexity(query: str) -> str:
     }
     
     payload = {
-        'model': 'sonar-small-online',
+        'model': 'sonar',
         'messages': [
             {
                 'role': 'system',
