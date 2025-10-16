@@ -8,7 +8,6 @@ import asyncio
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # Environment variables
@@ -17,6 +16,25 @@ PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
 
 # Bot state management
 active_channels = set()
+
+# Hollywood Hills EMS S.O.P's document context
+SOP_CONTEXT = """
+You are providing guidance based strictly on the Hollywood Hills EMS Standard Operating Procedures (S.O.P's). 
+This document covers comprehensive protocols for:
+- Emergency Medical Services (EMS) response and patient care
+- Fire suppression tactics and firefighting procedures
+- Water rescue operations and swift water safety protocols
+- Technical rescue (confined space, high angle rescue, structural collapse)
+- Hazardous materials (HAZMAT) incident response
+- Vehicle extrication and traffic incident management
+- Mass casualty incidents and disaster response
+- Fire prevention, safety inspections, and public education
+- Incident command system and organizational protocols
+
+Answer all questions strictly according to these Hollywood Hills EMS S.O.P's. Provide detailed, accurate information 
+following the specific procedures outlined in this document. Always prioritize safety and recommend calling 
+emergency services (911) for immediate life-threatening emergencies.
+"""
 
 @bot.event
 async def on_ready():
@@ -88,6 +106,25 @@ async def deactivate(interaction: discord.Interaction):
     
     print(f'LSFD Assistant deactivated in channel {channel_id} by {interaction.user}')
 
+@bot.tree.command(name='sop', description='Ask any question about EMS, fire, rescue, or operational procedures')
+async def sop(interaction: discord.Interaction, question: str):
+    """Answer questions about SOPs using Hollywood Hills EMS S.O.P's document as context"""
+    
+    await interaction.response.defer()
+    
+    try:
+        # Prepend the SOP context to the user's question
+        enhanced_query = f"{SOP_CONTEXT}\n\nUser Question: {question}"
+        response = await query_perplexity_sop(enhanced_query)
+        
+        if response:
+            await interaction.followup.send(response)
+        else:
+            await interaction.followup.send('⚠️ Unable to process your query at the moment. Please try again.')
+    except Exception as e:
+        print(f'Error in /sop command: {str(e)}')
+        await interaction.followup.send('⚠️ An error occurred while processing your question. Please try again.')
+
 @bot.tree.command(name='help', description='Get information about LSFD Assistant commands and capabilities')
 async def help_command(interaction: discord.Interaction):
     """Display help information about the LSFD Assistant"""
@@ -97,6 +134,7 @@ async def help_command(interaction: discord.Interaction):
         '**Available Commands:**\n'
         '• `/activate` - Activate the bot in this channel (requires Manage Channels permission)\n'
         '• `/deactivate` - Deactivate the bot in this channel (requires Manage Channels permission)\n'
+        '• `/sop <question>` - Ask any question about EMS, fire, rescue, or operational procedures\n'
         '• `/help` - Show this help message\n\n'
         '**Capabilities:**\n'
         '🔥 Fire SOPs and firefighting procedures\n'
@@ -105,14 +143,15 @@ async def help_command(interaction: discord.Interaction):
         '⚠️ Emergency response procedures\n'
         '📋 Standard operating procedures for LSFD\n\n'
         '**How to Use:**\n'
-        '1. Activate the bot in a channel using `/activate`\n'
-        '2. Mention the bot or use keywords like "fire", "ems", "rescue", "emergency", "medical", "safety"\n'
-        '3. Ask your question about LSFD procedures, protocols, or operations\n\n'
+        '1. Use `/sop` command to ask specific questions about procedures\n'
+        '2. Or activate the bot in a channel using `/activate`\n'
+        '3. When activated, mention the bot or use keywords like "fire", "ems", "rescue", "emergency", "medical", "safety"\n'
+        '4. Ask your question about LSFD procedures, protocols, or operations\n\n'
         '**Example Questions:**\n'
-        '• "What are the fire safety protocols for structure fires?"\n'
-        '• "How do I perform CPR during a cardiac emergency?"\n'
-        '• "What are the water rescue procedures for swift water?"\n'
-        '• "What\'s the protocol for hazmat incidents?"\n'
+        '• `/sop What are the fire safety protocols for structure fires?`\n'
+        '• `/sop How do I perform CPR during a cardiac emergency?`\n'
+        '• `/sop What are the water rescue procedures for swift water?`\n'
+        '• `/sop What\'s the protocol for hazmat incidents?`\n'
     )
     
     await interaction.response.send_message(help_text, ephemeral=True)
@@ -134,14 +173,16 @@ async def on_message(message):
     
     if is_mentioned or has_keyword:
         async with message.channel.typing():
-            response = await query_perplexity(message.content)
+            # Prepend SOP context for channel messages too
+            enhanced_query = f"{SOP_CONTEXT}\n\nUser Question: {message.content}"
+            response = await query_perplexity_sop(enhanced_query)
             if response:
                 await message.reply(response)
             else:
                 await message.reply('⚠️ Unable to process your query at the moment. Please try again.')
 
-async def query_perplexity(query: str) -> str:
-    """Query Perplexity API for intelligent responses about LSFD operations"""
+async def query_perplexity_sop(query: str) -> str:
+    """Query Perplexity API with SOP-focused context and human-like responses"""
     
     if not PERPLEXITY_API_KEY:
         return '⚠️ Perplexity API key not configured.'
@@ -152,21 +193,16 @@ async def query_perplexity(query: str) -> str:
         'Content-Type': 'application/json'
     }
     
-    # Enhanced system prompt with LSFD context
+    # Enhanced system prompt with human-like, emotionally supportive tone
     system_content = (
-        'You are the Los Santos Fire Department Assistant (LSFD Assistant), an expert AI assistant '
-        'providing guidance on fire department standard operating procedures (SOPs), emergency medical services (EMS), '
-        'and rescue operations. Your expertise covers:\n'
-        '- Fire suppression tactics and firefighting SOPs\n'
-        '- EMS protocols and medical emergency procedures\n'
-        '- Water rescue operations and swift water safety\n'
-        '- Technical rescue (confined space, high angle, collapse)\n'
-        '- Hazardous materials (HAZMAT) response\n'
-        '- Vehicle extrication and traffic incident management\n'
-        '- Fire prevention, safety inspections, and public education\n\n'
-        'Provide concise, accurate information following standard fire service and EMS best practices. '
-        'Always prioritize safety and recommend calling emergency services (911) for immediate life-threatening emergencies. '
-        'Reference standard operating procedures, NFPA standards, and established protocols when applicable.'
+        'You are a helpful, experienced first responder providing guidance on emergency procedures. '
+        'Respond in a helpful, human, and emotionally supportive tone. '
+        'Do NOT mention you are an AI or language model. '
+        'Answer questions based strictly on the Hollywood Hills EMS Standard Operating Procedures (S.O.P\'s) provided in the context. '
+        'Show empathy and understanding while providing clear, accurate procedural information. '
+        'Use natural language and conversational phrasing as if you are a colleague sharing knowledge. '
+        'When appropriate, acknowledge the emotional weight of emergency situations while maintaining professionalism. '
+        'Always prioritize safety and recommend calling 911 for actual emergencies.'
     )
     
     payload = {
@@ -181,8 +217,8 @@ async def query_perplexity(query: str) -> str:
                 'content': query
             }
         ],
-        'max_tokens': 500,
-        'temperature': 0.7
+        'max_tokens': 800,
+        'temperature': 0.8
     }
     
     try:
