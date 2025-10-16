@@ -12,8 +12,10 @@ intents.guilds = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # Environment variables
-DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+discord_token_env = 'DISCORD_BOT_TOKEN'
+DISCORD_TOKEN = os.getenv(discord_token_env)
 PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
+
 # Authoritative SOP source URLs
 FIRE_SOP_VIEW_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/edit?tab=t.1vnx26sszwbz'
 EMS_SOP_VIEW_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/edit?tab=t.0'
@@ -97,14 +99,15 @@ def build_sop_context() -> Tuple[str, str]:
     """Return combined authoritative SOP context string and a brief provenance footer."""
     header = (
         "You provide guidance based strictly on the Los Santos Fire Department SOPs.\n"
-        "Always prioritize safety and advise calling 911 for real emergencies.\n"
+        "Keep it focused on FiveM roleplay unless the user explicitly asks about real-life.\n"
+        "If a message sounds like an actual safety concern, add a short safety note.\n"
         "Use only the Fire SOP and EMS SOP text below as authoritative sources.\n"
     )
     fire = _fire_sop_cache or ''
     ems = _ems_sop_cache or ''
     combined = f"{header}\nFIRE SOP (authoritative):\n\n{fire}\n\nEMS SOP (authoritative):\n\n{ems}"
     provenance = (
-        f"Sources: Fire SOP {FIRE_SOP_VIEW_URL} | EMS SOP {EMS_SOP_VIEW_URL}"
+        f"Sources available on request."
     )
     return combined, provenance
 
@@ -176,7 +179,13 @@ async def sop(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
         sop_context, provenance = build_sop_context()
-        enhanced_query = f"{sop_context}\n\nUser Question: {question}\n\nRemember to base your answer strictly on the SOP text above."
+        enhanced_query = (
+            f"{sop_context}\n\n"
+            f"User Question (FiveM RP context by default): {question}\n\n"
+            f"Remember: Keep the tone human and conversational; focus on LSFD roleplay. "
+            f"Avoid real-life comparisons or advice unless the user explicitly asks or it's clearly a safety/emergency context. "
+            f"Only use the SOP text above; if something isn't in it, say you can't confirm."
+        )
         response = await query_perplexity_sop(enhanced_query, provenance)
         if response:
             await send_chunked_followup(interaction, response)
@@ -194,6 +203,7 @@ async def help_command(interaction: discord.Interaction):
         '• `/activate` - Activate in this channel (Manage Channels required)\n'
         '• `/deactivate` - Deactivate in this channel (Manage Channels required)\n'
         '• `/sop <question>` - Ask any question about procedures\n'
+        '\nTip: Ask for sources if you want the SOP links.'
     )
     await interaction.response.send_message(help_text, ephemeral=True)
 
@@ -210,7 +220,13 @@ async def on_message(message: discord.Message):
     if is_mentioned or has_keyword:
         async with message.channel.typing():
             sop_context, provenance = build_sop_context()
-            enhanced_query = f"{sop_context}\n\nUser Question: {message.content}\n\nRemember to base your answer strictly on the SOP text above."
+            enhanced_query = (
+                f"{sop_context}\n\n"
+                f"User Question (FiveM RP context by default): {message.content}\n\n"
+                f"Remember: Keep the tone human and conversational; focus on LSFD roleplay. "
+                f"Avoid real-life comparisons or advice unless the user explicitly asks or it's clearly a safety/emergency context. "
+                f"Only use the SOP text above; if something isn't in it, say you can't confirm."
+            )
             response = await query_perplexity_sop(enhanced_query, provenance)
             if response:
                 await send_chunked_reply(message, response)
@@ -228,14 +244,11 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
     }
     system_content = (
         'You are a seasoned first responder providing guidance based solely on the authoritative Fire and EMS SOP excerpts provided in the user message. '
-        'Talk like a normal person having a conversation, not like a textbook or manual. '
-        'Do NOT use bullet points, numbered lists, or dictionary-style formatting. '
-        'Do NOT structure responses with sections, headers, or formatted lists. '
-        'Write in short, flowing paragraphs using natural, conversational language as if you\'re explaining this to a colleague. '
+        'Speak in natural, short, conversational paragraphs with a friendly, supportive tone. '
+        'Do NOT use bullet points, numbered lists, dictionary-style formatting, sections, headers, or rigid structures. '
+        'Focus on FiveM roleplay context by default. Do not compare to or advise on real-life unless the user explicitly asks or the situation clearly indicates a real safety/emergency concern—keep any such note brief. '
         'Only use information present in the provided SOP context; if something is not in the SOPs, say you cannot confirm it. '
-        'Respond in a helpful, human, and supportive tone. '
-        'Do NOT mention you are an AI or language model. '
-        'Always prioritize safety and recommend calling 911 for actual emergencies.'
+        'Do NOT mention you are an AI or language model.'
     )
     payload = {
         'model': 'sonar',
@@ -252,8 +265,8 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
                 if response.status == 200:
                     data = await response.json()
                     content = data['choices'][0]['message']['content']
-                    # Append provenance links subtly so users can verify
-                    content = f"🚒 **LSFD Assistant**\n{content}\n\n(Reference: {provenance})"
+                    # Keep branding; omit provenance unless requested
+                    content = f"🚒 **LSFD Assistant**\n{content}"
                     return content
                 else:
                     error_text = await response.text()
@@ -269,7 +282,7 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
 
 if __name__ == '__main__':
     if not DISCORD_TOKEN:
-        print('ERROR: DISCORD_BOT_TOKEN environment variable not set!')
+        print(f'ERROR: {discord_token_env} environment variable not set!')
         exit(1)
     print('Starting Los Santos Fire Department Assistant (LSFD Assistant)...')
     bot.run(DISCORD_TOKEN)
