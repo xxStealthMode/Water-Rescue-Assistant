@@ -24,18 +24,15 @@ active_channels = set()
 _sop_cache: str = ''
 _last_sop_fetch_ok: bool = False
 
-
 def chunk_message(text: str, limit: int = 2000) -> List[str]:
     """Split text into chunks <= limit, preferring to break on paragraph or line boundaries."""
     if text is None:
         return [""]
     if len(text) <= limit:
         return [text]
-
     chunks = []
     remaining = text
     sep_candidates = ['\n\n', '\n', '. ']
-
     while remaining:
         if len(remaining) <= limit:
             chunks.append(remaining)
@@ -54,11 +51,10 @@ def chunk_message(text: str, limit: int = 2000) -> List[str]:
         remaining = remaining[split_idx:]
     return chunks
 
-
 async def fetch_sop_from_doc(session: aiohttp.ClientSession) -> Optional[str]:
     """Fetch latest SOP text from Google Doc or given URL.
     Expect SOP_DOC_URL to be an export URL such as:
-    https://docs.google.com/document/d/<DOC_ID>/export?format=txt
+    https://docs.google.com/document/d/<doc_id>/export?format=txt
     """
     url = SOP_DOC_URL
     if not url:
@@ -74,7 +70,6 @@ async def fetch_sop_from_doc(session: aiohttp.ClientSession) -> Optional[str]:
     except Exception as e:
         print(f'SOP fetch exception: {e}')
         return None
-
 
 async def refresh_sop_cache_periodically():
     global _sop_cache, _last_sop_fetch_ok
@@ -95,7 +90,6 @@ async def refresh_sop_cache_periodically():
             print(f'SOP periodic refresh error: {e}')
         await asyncio.sleep(max(60, SOP_REFRESH_SECONDS))
 
-
 def build_sop_context() -> str:
     """Compose the system/user preface for SOP answers, using cached SOP if present."""
     header = (
@@ -108,7 +102,6 @@ def build_sop_context() -> str:
         # Fallback minimal context if cache unavailable
         return header
 
-
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
@@ -117,7 +110,6 @@ async def on_ready():
     print('Slash commands synced')
     # Start SOP refresher task
     bot.loop.create_task(refresh_sop_cache_periodically())
-
 
 @bot.tree.command(name='activate', description='Activate the LSFD Assistant bot for fire, EMS, and rescue support in this channel')
 async def activate(interaction: discord.Interaction):
@@ -135,7 +127,6 @@ async def activate(interaction: discord.Interaction):
         ephemeral=False
     )
 
-
 @bot.tree.command(name='deactivate', description='Deactivate the LSFD Assistant bot in this channel')
 async def deactivate(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_channels:
@@ -151,7 +142,6 @@ async def deactivate(interaction: discord.Interaction):
         ephemeral=False
     )
 
-
 async def send_chunked_followup(interaction: discord.Interaction, content: str):
     """Send content in <=2000 char chunks via followup messages."""
     chunks = chunk_message(content, 2000)
@@ -164,7 +154,6 @@ async def send_chunked_followup(interaction: discord.Interaction, content: str):
         else:
             await interaction.followup.send(c)
 
-
 async def send_chunked_reply(message: discord.Message, content: str):
     chunks = chunk_message(content, 2000)
     for i, c in enumerate(chunks):
@@ -172,7 +161,6 @@ async def send_chunked_reply(message: discord.Message, content: str):
             await message.reply(c)
         else:
             await message.channel.send(c, reference=message.to_reference(fail_if_not_exists=False))
-
 
 @bot.tree.command(name='sop', description='Ask any question about EMS, fire, rescue, or operational procedures')
 async def sop(interaction: discord.Interaction, question: str):
@@ -190,7 +178,6 @@ async def sop(interaction: discord.Interaction, question: str):
         print(f'Error in /sop command: {str(e)}')
         await interaction.followup.send('⚠️ An error occurred while processing your question. Please try again.')
 
-
 @bot.tree.command(name='help', description='Get information about LSFD Assistant commands and capabilities')
 async def help_command(interaction: discord.Interaction):
     help_text = (
@@ -200,7 +187,6 @@ async def help_command(interaction: discord.Interaction):
         '• `/sop <question>` - Ask any question about procedures\n'
     )
     await interaction.response.send_message(help_text, ephemeral=True)
-
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -221,7 +207,6 @@ async def on_message(message: discord.Message):
             else:
                 await message.reply('⚠️ Unable to process your query at the moment. Please try again.')
 
-
 async def query_perplexity_sop(query: str) -> Optional[str]:
     if not PERPLEXITY_API_KEY:
         return '⚠️ Perplexity API key not configured.'
@@ -232,11 +217,14 @@ async def query_perplexity_sop(query: str) -> Optional[str]:
     }
     system_content = (
         'You are a helpful, experienced first responder providing guidance on emergency procedures. '
+        'Talk like a normal person having a conversation, not like a textbook or manual. '
+        'Do NOT use bullet points, numbered lists, or dictionary-style formatting. '
+        'Do NOT structure your responses with sections, headers, or formatted lists. '
+        'Instead, write in flowing paragraphs using natural, conversational language as if you\'re explaining something to a colleague over coffee. '
         'Respond in a helpful, human, and emotionally supportive tone. '
         'Do NOT mention you are an AI or language model. '
         'Answer questions based strictly on the provided SOP context. '
-        'Show empathy and understanding while providing clear, accurate procedural information. '
-        'Use natural language and conversational phrasing as if you are a colleague. '
+        'Show empathy and understanding while providing clear, accurate procedural information in a natural speaking style. '
         'Always prioritize safety and recommend calling 911 for actual emergencies.'
     )
     payload = {
@@ -264,7 +252,6 @@ async def query_perplexity_sop(query: str) -> Optional[str]:
     except Exception as e:
         print(f'Perplexity API exception: {str(e)}')
         return None
-
 
 if __name__ == '__main__':
     if not DISCORD_TOKEN:
