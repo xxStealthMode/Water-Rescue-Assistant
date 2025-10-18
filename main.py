@@ -120,6 +120,9 @@ async def on_ready():
     
     # Initial knowledge fetch
     await fetch_knowledge()
+    
+    # Start background refresh task
+    bot.loop.create_task(refresh_knowledge_loop())
 
 @bot.event
 async def on_member_join(member):
@@ -220,9 +223,6 @@ if __name__ == '__main__':
         raise ValueError(f'Missing {discord_token_env} environment variable')
     if not PERPLEXITY_API_KEY:
         raise ValueError('Missing PERPLEXITY_API_KEY environment variable')
-    
-    # Start background task
-    bot.loop.create_task(refresh_knowledge_loop())
     
     # Run the bot
     bot.run(DISCORD_TOKEN)
