@@ -153,7 +153,7 @@ Roster:
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
-                'model': 'llama-3.1-sonar-large-128k-online',
+                'model': 'sonar',
                 'messages': [
                     {'role': 'system', 'content': f'You are a helpful assistant. Use this knowledge base to answer questions:\n\n{context}'},
                     {'role': 'user', 'content': question}
