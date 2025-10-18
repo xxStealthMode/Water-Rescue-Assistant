@@ -1,14 +1,17 @@
 import os
+import json
 import asyncio
 import aiohttp
 import discord
 from discord.ext import commands
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 # Bot configuration
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True  # needed for member join/leave events
+
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 # Environment variables
@@ -31,11 +34,40 @@ KNOWLEDGE_REFRESH_SECONDS = int(os.getenv('SOP_REFRESH_SECONDS', '900'))  # defa
 # Bot state management
 active_channels = set()
 
+# Welcome channel mapping per guild (in-memory) + basic file persistence
+WELCOME_MAP_FILE = 'welcome_channels.json'
+welcome_channels: Dict[int, int] = {}
+
+
+def load_welcome_channels():
+    global welcome_channels
+    try:
+        if os.path.exists(WELCOME_MAP_FILE):
+            with open(WELCOME_MAP_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # keys saved as str -> convert back to int
+                welcome_channels = {int(k): int(v) for k, v in data.items()}
+        else:
+            welcome_channels = {}
+    except Exception as e:
+        print(f'Failed to load {WELCOME_MAP_FILE}: {e}')
+        welcome_channels = {}
+
+
+def save_welcome_channels():
+    try:
+        with open(WELCOME_MAP_FILE, 'w', encoding='utf-8') as f:
+            # convert keys to str for JSON compatibility
+            json.dump({str(k): v for k, v in welcome_channels.items()}, f, indent=2)
+    except Exception as e:
+        print(f'Failed to save {WELCOME_MAP_FILE}: {e}')
+
 # In-memory knowledge base cache
 _fire_sop_cache: str = ''
 _ems_sop_cache: str = ''
 _roster_cache: str = ''
 _last_fetch_ok: bool = False
+
 
 def chunk_message(text: str, limit: int = 2000) -> List[str]:
     """Split text into chunks <= limit, preferring to break on paragraph or line boundaries."""
@@ -62,6 +94,7 @@ def chunk_message(text: str, limit: int = 2000) -> List[str]:
         remaining = remaining[split_idx:]
     return chunks
 
+
 async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> Optional[str]:
     try:
         async with session.get(url, timeout=30) as resp:
@@ -73,6 +106,7 @@ async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> Optional[s
     except Exception as e:
         print(f'Fetch exception {url}: {str(e)}')
         return None
+
 
 async def fetch_knowledge_base():
     """Fetch Fire SOP, EMS SOP, and roster data."""
@@ -94,12 +128,14 @@ async def fetch_knowledge_base():
             _last_fetch_ok = False
             print('Knowledge base refresh incomplete.')
 
+
 async def periodic_knowledge_refresh():
     """Periodically refresh knowledge base."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         await fetch_knowledge_base()
         await asyncio.sleep(KNOWLEDGE_REFRESH_SECONDS)
+
 
 def build_knowledge_context() -> Tuple[str, str]:
     """
@@ -124,17 +160,79 @@ def build_knowledge_context() -> Tuple[str, str]:
     )
     return (context, sources)
 
+
 async def send_chunked_reply(message: discord.Message, text: str):
     """Send text as multiple messages if needed."""
     chunks = chunk_message(text)
     for chunk in chunks:
         await message.reply(chunk)
 
+
+# ---------- Welcome channel command and events ----------
+
+@bot.command(name='welcomechannel')
+@commands.has_permissions(manage_guild=True)
+async def set_welcome_channel(ctx: commands.Context):
+    """Designate the current channel as this server's welcome log channel."""
+    if not ctx.guild:
+        return await ctx.send('This command can only be used in a server.')
+
+    welcome_channels[ctx.guild.id] = ctx.channel.id
+    save_welcome_channels()
+
+    await ctx.send(f'✅ Set this channel as the welcome log for "{ctx.guild.name}".')
+
+
+@set_welcome_channel.error
+async def set_welcome_channel_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send('❌ You need the Manage Server permission to use this command.')
+    else:
+        await ctx.send(f'❌ Error: {error}')
+
+
+def get_welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    channel_id = welcome_channels.get(guild.id)
+    if channel_id:
+        return guild.get_channel(channel_id) or None
+    return None
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel = get_welcome_channel(member.guild)
+    if not channel:
+        return
+    guild_name = member.guild.name
+    embed = discord.Embed(title='Member Joined', description=f'Welcome {member.mention} to {guild_name}!', color=0x57F287)
+    embed.set_thumbnail(url=member.display_avatar.url if member.display_avatar else discord.Embed.Empty)
+    embed.add_field(name='Member', value=f'{member} (ID: {member.id})', inline=False)
+    embed.add_field(name='Server', value=guild_name, inline=False)
+    await channel.send(embed=embed)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    channel = get_welcome_channel(member.guild)
+    if not channel:
+        return
+    guild_name = member.guild.name
+    embed = discord.Embed(title='Member Left', description=f'Goodbye {member.mention}. Thanks for being part of {guild_name}.', color=0xED4245)
+    embed.set_thumbnail(url=member.display_avatar.url if member.display_avatar else discord.Embed.Empty)
+    embed.add_field(name='Member', value=f'{member} (ID: {member.id})', inline=False)
+    embed.add_field(name='Server', value=guild_name, inline=False)
+    await channel.send(embed=embed)
+
+
+# ---------- Existing bot events and commands ----------
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
+    load_welcome_channels()
     await fetch_knowledge_base()
     bot.loop.create_task(periodic_knowledge_refresh())
+
 
 @bot.command(name='activate')
 async def activate_channel(ctx):
@@ -142,17 +240,20 @@ async def activate_channel(ctx):
     active_channels.add(ctx.channel.id)
     await ctx.send('🚒 LSFD Assistant activated in this channel!')
 
+
 @bot.command(name='deactivate')
 async def deactivate_channel(ctx):
     """Deactivate the assistant in this channel."""
     active_channels.discard(ctx.channel.id)
     await ctx.send('🚒 LSFD Assistant deactivated in this channel.')
 
+
 @bot.command(name='sources')
 async def show_sources(ctx):
     """Show knowledge base sources."""
     _, sources = build_knowledge_context()
     await ctx.send(sources)
+
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -176,6 +277,7 @@ async def on_message(message: discord.Message):
             else:
                 await message.reply('⚠️ Unable to process your query at the moment. Please try again.')
 
+
 async def query_perplexity_knowledge(query: str) -> Optional[str]:
     if not PERPLEXITY_API_KEY:
         return '⚠️ Perplexity API key not configured.'
@@ -188,10 +290,10 @@ async def query_perplexity_knowledge(query: str) -> Optional[str]:
         'You are the LSFD Assistant, a helpful and knowledgeable first responder assistant for FiveM roleplay. '
         'You have access to Fire SOPs, EMS SOPs, and the department roster. '
         'Speak naturally and conversationally—be friendly, supportive, and approachable, like a helpful colleague. '
-        'Draw upon all your knowledge (SOPs and roster) when relevant, but don\'t focus excessively on procedures—provide comprehensive, practical assistance. '
+        "Draw upon all your knowledge (SOPs and roster) when relevant, but don't focus excessively on procedures—provide comprehensive, practical assistance. "
         'Focus on FiveM RP context by default. Only mention real-life comparisons if explicitly asked or clearly needed for safety, and keep it brief. '
         'Use natural, flowing paragraphs—avoid bullet points, numbered lists, or overly formal structures unless specifically appropriate. '
-        'Only use information from the provided knowledge base. If something isn\'t there, say you can\'t confirm it. '
+        "Only use information from the provided knowledge base. If something isn't there, say you can't confirm it. "
         'Never mention who created you or where your knowledge comes from unless directly asked. '
         'Never mention you are an AI or language model.'
     )
@@ -223,6 +325,7 @@ async def query_perplexity_knowledge(query: str) -> Optional[str]:
     except Exception as e:
         print(f'Perplexity API exception: {str(e)}')
         return None
+
 
 if __name__ == '__main__':
     if not DISCORD_TOKEN:
