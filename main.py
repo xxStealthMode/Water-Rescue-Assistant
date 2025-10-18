@@ -16,22 +16,26 @@ discord_token_env = 'DISCORD_BOT_TOKEN'
 DISCORD_TOKEN = os.getenv(discord_token_env)
 PERPLEXITY_API_KEY = os.getenv('PERPLEXITY_API_KEY')
 
-# Authoritative SOP source URLs
+# Knowledge base source URLs
 FIRE_SOP_VIEW_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/edit?tab=t.1vnx26sszwbz'
 EMS_SOP_VIEW_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/edit?tab=t.0'
+ROSTER_VIEW_URL = 'https://docs.google.com/spreadsheets/d/1WaUQF1mMBxno5zuyMuP6OB_7JvXnLT3s3epBoTI5dRw/edit?gid=705786844#gid=705786844'
+
 # Export URLs (txt) for reliable fetching
 FIRE_SOP_EXPORT_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/export?format=txt'
 EMS_SOP_EXPORT_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/export?format=txt'
-SOP_REFRESH_SECONDS = int(os.getenv('SOP_REFRESH_SECONDS', '900'))  # default 15 minutes
+ROSTER_EXPORT_URL = 'https://docs.google.com/spreadsheets/d/1WaUQF1mMBxno5zuyMuP6OB_7JvXnLT3s3epBoTI5dRw/export?format=txt'
+
+KNOWLEDGE_REFRESH_SECONDS = int(os.getenv('SOP_REFRESH_SECONDS', '900'))  # default 15 minutes
 
 # Bot state management
 active_channels = set()
 
-# In-memory SOP cache
+# In-memory knowledge base cache
 _fire_sop_cache: str = ''
 _ems_sop_cache: str = ''
-_last_sop_fetch_ok: bool = False
-
+_roster_cache: str = ''
+_last_fetch_ok: bool = False
 
 def chunk_message(text: str, limit: int = 2000) -> List[str]:
     """Split text into chunks <= limit, preferring to break on paragraph or line boundaries."""
@@ -58,7 +62,6 @@ def chunk_message(text: str, limit: int = 2000) -> List[str]:
         remaining = remaining[split_idx:]
     return chunks
 
-
 async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> Optional[str]:
     try:
         async with session.get(url, timeout=30) as resp:
@@ -68,173 +71,112 @@ async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> Optional[s
                 print(f'Fetch failed {url}: {resp.status} {await resp.text()}')
                 return None
     except Exception as e:
-        print(f'Fetch exception {url}: {e}')
+        print(f'Fetch exception {url}: {str(e)}')
         return None
 
+async def fetch_knowledge_base():
+    """Fetch Fire SOP, EMS SOP, and roster data."""
+    global _fire_sop_cache, _ems_sop_cache, _roster_cache, _last_fetch_ok
+    async with aiohttp.ClientSession() as session:
+        fire_text, ems_text, roster_text = await asyncio.gather(
+            fetch_url_text(session, FIRE_SOP_EXPORT_URL),
+            fetch_url_text(session, EMS_SOP_EXPORT_URL),
+            fetch_url_text(session, ROSTER_EXPORT_URL),
+            return_exceptions=True
+        )
+        if fire_text and ems_text and roster_text:
+            _fire_sop_cache = fire_text
+            _ems_sop_cache = ems_text
+            _roster_cache = roster_text
+            _last_fetch_ok = True
+            print('Knowledge base refresh complete (SOPs + Roster).')
+        else:
+            _last_fetch_ok = False
+            print('Knowledge base refresh incomplete.')
 
-async def refresh_sop_cache_periodically():
-    global _fire_sop_cache, _ems_sop_cache, _last_sop_fetch_ok
+async def periodic_knowledge_refresh():
+    """Periodically refresh knowledge base."""
     await bot.wait_until_ready()
     while not bot.is_closed():
-        try:
-            async with aiohttp.ClientSession() as session:
-                fire = await fetch_url_text(session, FIRE_SOP_EXPORT_URL)
-                ems = await fetch_url_text(session, EMS_SOP_EXPORT_URL)
-                ok = False
-                if fire and fire.strip():
-                    _fire_sop_cache = fire.strip()
-                    ok = True
-                if ems and ems.strip():
-                    _ems_sop_cache = ems.strip()
-                    ok = True or ok
-                _last_sop_fetch_ok = ok
-                print(f'Refreshed SOP caches. Fire={len(_fire_sop_cache)} chars, EMS={len(_ems_sop_cache)} chars')
-        except Exception as e:
-            _last_sop_fetch_ok = False
-            print(f'SOP periodic refresh error: {e}')
-        await asyncio.sleep(max(60, SOP_REFRESH_SECONDS))
+        await fetch_knowledge_base()
+        await asyncio.sleep(KNOWLEDGE_REFRESH_SECONDS)
 
-
-def build_sop_context() -> Tuple[str, str]:
-    """Return combined authoritative SOP context string and a brief provenance footer."""
-    header = (
-        "You provide guidance based strictly on the Los Santos Fire Department SOPs.\n"
-        "Keep it focused on FiveM roleplay unless the user explicitly asks about real-life.\n"
-        "If a message sounds like an actual safety concern, add a short safety note.\n"
-        "Use only the Fire SOP and EMS SOP text below as authoritative sources.\n"
+def build_knowledge_context() -> Tuple[str, str]:
+    """
+    Returns (context_text, source_links).
+    Context includes SOPs and roster info.
+    """
+    if not _last_fetch_ok:
+        return (
+            'Knowledge base not available. Please try again later.',
+            'Sources temporarily unavailable.'
+        )
+    context = (
+        f"=== Fire SOP ===\n{_fire_sop_cache[:8000]}\n\n"
+        f"=== EMS SOP ===\n{_ems_sop_cache[:8000]}\n\n"
+        f"=== EMS/Fire Roster ===\n{_roster_cache[:4000]}\n\n"
     )
-    fire = _fire_sop_cache or ''
-    ems = _ems_sop_cache or ''
-    combined = f"{header}\nFIRE SOP (authoritative):\n\n{fire}\n\nEMS SOP (authoritative):\n\n{ems}"
-    provenance = (
-        f"Sources available on request."
+    sources = (
+        f"📋 Knowledge Sources:\n"
+        f"• Fire SOP: {FIRE_SOP_VIEW_URL}\n"
+        f"• EMS SOP: {EMS_SOP_VIEW_URL}\n"
+        f"• Roster: {ROSTER_VIEW_URL}"
     )
-    return combined, provenance
+    return (context, sources)
 
+async def send_chunked_reply(message: discord.Message, text: str):
+    """Send text as multiple messages if needed."""
+    chunks = chunk_message(text)
+    for chunk in chunks:
+        await message.reply(chunk)
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user} has connected to Discord!')
-    print(f'Bot is in {len(bot.guilds)} guilds')
-    await bot.tree.sync()
-    print('Slash commands synced')
-    bot.loop.create_task(refresh_sop_cache_periodically())
+    print(f'Logged in as {bot.user}')
+    await fetch_knowledge_base()
+    bot.loop.create_task(periodic_knowledge_refresh())
 
+@bot.command(name='activate')
+async def activate_channel(ctx):
+    """Activate the assistant in this channel."""
+    active_channels.add(ctx.channel.id)
+    await ctx.send('🚒 LSFD Assistant activated in this channel!')
 
-@bot.tree.command(name='activate', description='Activate the LSFD Assistant bot for fire, EMS, and rescue support in this channel')
-async def activate(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_channels:
-        await interaction.response.send_message('❌ You need "Manage Channels" permission to activate the bot.', ephemeral=True)
-        return
-    channel_id = interaction.channel_id
-    if channel_id in active_channels:
-        await interaction.response.send_message('⚠️ LSFD Assistant is already active in this channel.', ephemeral=True)
-        return
-    active_channels.add(channel_id)
-    await interaction.response.send_message(
-        f'✅ **Los Santos Fire Department Assistant Activated!**\n'
-        f'🚒 I\'m now monitoring <#{channel_id}> for SOP queries.',
-        ephemeral=False
-    )
+@bot.command(name='deactivate')
+async def deactivate_channel(ctx):
+    """Deactivate the assistant in this channel."""
+    active_channels.discard(ctx.channel.id)
+    await ctx.send('🚒 LSFD Assistant deactivated in this channel.')
 
-
-@bot.tree.command(name='deactivate', description='Deactivate the LSFD Assistant bot in this channel')
-async def deactivate(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_channels:
-        await interaction.response.send_message('❌ You need "Manage Channels" permission to deactivate the bot.', ephemeral=True)
-        return
-    channel_id = interaction.channel_id
-    if channel_id not in active_channels:
-        await interaction.response.send_message('⚠️ LSFD Assistant is not active in this channel.', ephemeral=True)
-        return
-    active_channels.remove(channel_id)
-    await interaction.response.send_message(
-        f'✅ **LSFD Assistant Deactivated**\nThe bot will no longer respond in <#{channel_id}>.',
-        ephemeral=False
-    )
-
-
-async def send_chunked_followup(interaction: discord.Interaction, content: str):
-    chunks = chunk_message(content, 2000)
-    for i, c in enumerate(chunks):
-        if i == 0 and interaction.response.is_done():
-            await interaction.followup.send(c)
-        elif i == 0:
-            await interaction.response.send_message(c)
-        else:
-            await interaction.followup.send(c)
-
-
-async def send_chunked_reply(message: discord.Message, content: str):
-    chunks = chunk_message(content, 2000)
-    for i, c in enumerate(chunks):
-        if i == 0:
-            await message.reply(c)
-        else:
-            await message.channel.send(c, reference=message.to_reference(fail_if_not_exists=False))
-
-
-@bot.tree.command(name='sop', description='Ask any question about EMS, fire, rescue, or operational procedures')
-async def sop(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()
-    try:
-        sop_context, provenance = build_sop_context()
-        enhanced_query = (
-            f"{sop_context}\n\n"
-            f"User Question (FiveM RP context by default): {question}\n\n"
-            f"Remember: Keep the tone human and conversational; focus on LSFD roleplay. "
-            f"Avoid real-life comparisons or advice unless the user explicitly asks or it's clearly a safety/emergency context. "
-            f"Only use the SOP text above; if something isn't in it, say you can't confirm."
-        )
-        response = await query_perplexity_sop(enhanced_query, provenance)
-        if response:
-            await send_chunked_followup(interaction, response)
-        else:
-            await interaction.followup.send('⚠️ Unable to process your query at the moment. Please try again.')
-    except Exception as e:
-        print(f'Error in /sop command: {str(e)}')
-        await interaction.followup.send('⚠️ An error occurred while processing your question. Please try again.')
-
-
-@bot.tree.command(name='help', description='Get information about LSFD Assistant commands and capabilities')
-async def help_command(interaction: discord.Interaction):
-    help_text = (
-        '🚒 **Los Santos Fire Department Assistant (LSFD Assistant)**\n\n'
-        '• `/activate` - Activate in this channel (Manage Channels required)\n'
-        '• `/deactivate` - Deactivate in this channel (Manage Channels required)\n'
-        '• `/sop <question>` - Ask any question about procedures\n'
-        '\nTip: Ask for sources if you want the SOP links.'
-    )
-    await interaction.response.send_message(help_text, ephemeral=True)
-
+@bot.command(name='sources')
+async def show_sources(ctx):
+    """Show knowledge base sources."""
+    _, sources = build_knowledge_context()
+    await ctx.send(sources)
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author == bot.user:
+    if message.author.bot:
         return
-    if message.channel.id not in active_channels:
-        return
-    keywords = ['rescue', 'emergency', 'drowning', 'water', 'safety', 'help', 'fire', 'ems', 'medical', 'sop', 'protocol', 'hazmat', 'firefighter', 'paramedic', 'incident']
-    is_mentioned = bot.user in message.mentions
-    has_keyword = any(keyword in message.content.lower() for keyword in keywords)
-    if is_mentioned or has_keyword:
+    await bot.process_commands(message)
+    if message.channel.id in active_channels and not message.content.startswith('/'):
+        if not PERPLEXITY_API_KEY:
+            await message.reply('⚠️ Perplexity API key not configured.')
+            return
         async with message.channel.typing():
-            sop_context, provenance = build_sop_context()
+            context, sources = build_knowledge_context()
             enhanced_query = (
-                f"{sop_context}\n\n"
-                f"User Question (FiveM RP context by default): {message.content}\n\n"
-                f"Remember: Keep the tone human and conversational; focus on LSFD roleplay. "
-                f"Avoid real-life comparisons or advice unless the user explicitly asks or it's clearly a safety/emergency context. "
-                f"Only use the SOP text above; if something isn't in it, say you can't confirm."
+                f"{context}\n\n"
+                f"User Question (FiveM RP context): {message.content}\n\n"
+                f"Answer naturally and helpfully based on the knowledge above."
             )
-            response = await query_perplexity_sop(enhanced_query, provenance)
+            response = await query_perplexity_knowledge(enhanced_query)
             if response:
                 await send_chunked_reply(message, response)
             else:
                 await message.reply('⚠️ Unable to process your query at the moment. Please try again.')
 
-
-async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
+async def query_perplexity_knowledge(query: str) -> Optional[str]:
     if not PERPLEXITY_API_KEY:
         return '⚠️ Perplexity API key not configured.'
     url = 'https://api.perplexity.ai/chat/completions'
@@ -243,12 +185,15 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
         'Content-Type': 'application/json'
     }
     system_content = (
-        'You are a seasoned first responder providing guidance based solely on the authoritative Fire and EMS SOP excerpts provided in the user message. '
-        'Speak in natural, short, conversational paragraphs with a friendly, supportive tone. '
-        'Do NOT use bullet points, numbered lists, dictionary-style formatting, sections, headers, or rigid structures. '
-        'Focus on FiveM roleplay context by default. Do not compare to or advise on real-life unless the user explicitly asks or the situation clearly indicates a real safety/emergency concern—keep any such note brief. '
-        'Only use information present in the provided SOP context; if something is not in the SOPs, say you cannot confirm it. '
-        'Do NOT mention you are an AI or language model.'
+        'You are the LSFD Assistant, a helpful and knowledgeable first responder assistant for FiveM roleplay. '
+        'You have access to Fire SOPs, EMS SOPs, and the department roster. '
+        'Speak naturally and conversationally—be friendly, supportive, and approachable, like a helpful colleague. '
+        'Draw upon all your knowledge (SOPs and roster) when relevant, but don\'t focus excessively on procedures—provide comprehensive, practical assistance. '
+        'Focus on FiveM RP context by default. Only mention real-life comparisons if explicitly asked or clearly needed for safety, and keep it brief. '
+        'Use natural, flowing paragraphs—avoid bullet points, numbered lists, or overly formal structures unless specifically appropriate. '
+        'Only use information from the provided knowledge base. If something isn\'t there, say you can\'t confirm it. '
+        'Never mention who created you or where your knowledge comes from unless directly asked. '
+        'Never mention you are an AI or language model.'
     )
     payload = {
         'model': 'sonar',
@@ -265,7 +210,7 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
                 if response.status == 200:
                     data = await response.json()
                     content = data['choices'][0]['message']['content']
-                    # Keep branding; omit provenance unless requested
+                    # Simple branding
                     content = f"🚒 **LSFD Assistant**\n{content}"
                     return content
                 else:
@@ -278,7 +223,6 @@ async def query_perplexity_sop(query: str, provenance: str) -> Optional[str]:
     except Exception as e:
         print(f'Perplexity API exception: {str(e)}')
         return None
-
 
 if __name__ == '__main__':
     if not DISCORD_TOKEN:
