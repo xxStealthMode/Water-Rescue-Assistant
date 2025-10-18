@@ -27,7 +27,7 @@ ROSTER_VIEW_URL = 'https://docs.google.com/spreadsheets/d/1WaUQF1mMBxno5zuyMuP6O
 # Export URLs (txt) for reliable fetching
 FIRE_SOP_EXPORT_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/export?format=txt'
 EMS_SOP_EXPORT_URL = 'https://docs.google.com/document/d/1PNfx8IKvyLX1mqb-wJWcw_JGH2sJzOAPFGk0XmecJBc/export?format=txt'
-ROSTER_EXPORT_URL = 'https://docs.google.com/spreadsheets/d/1WaUQF1mMBxno5zuyMuP6OB_7JvXnLT3s3epBoTI5dRw/export?format=txt'
+ROSTER_EXPORT_URL = 'https://docs.google.com/spreadsheets/d/1WaUQF1mMBxno5zuyMuP6OB_7JvXnLT3s3epBoTI5dRw/export?format=csv&gid=705786844'
 
 KNOWLEDGE_REFRESH_SECONDS = int(os.getenv('SOP_REFRESH_SECONDS', '900'))  # default 15 minutes
 
@@ -37,7 +37,6 @@ active_channels = set()
 # Welcome channel mapping per guild (in-memory) + basic file persistence
 WELCOME_MAP_FILE = 'welcome_channels.json'
 welcome_channels: Dict[int, int] = {}
-
 
 def load_welcome_channels():
     global welcome_channels
@@ -53,7 +52,6 @@ def load_welcome_channels():
         print(f'Failed to load {WELCOME_MAP_FILE}: {e}')
         welcome_channels = {}
 
-
 def save_welcome_channels():
     try:
         with open(WELCOME_MAP_FILE, 'w', encoding='utf-8') as f:
@@ -62,274 +60,169 @@ def save_welcome_channels():
     except Exception as e:
         print(f'Failed to save {WELCOME_MAP_FILE}: {e}')
 
-# In-memory knowledge base cache
-_fire_sop_cache: str = ''
-_ems_sop_cache: str = ''
-_roster_cache: str = ''
-_last_fetch_ok: bool = False
+# Knowledge base storage
+knowledge_base = {
+    'fire_sop': '',
+    'ems_sop': '',
+    'roster': ''
+}
 
-
-def chunk_message(text: str, limit: int = 2000) -> List[str]:
-    """Split text into chunks <= limit, preferring to break on paragraph or line boundaries."""
-    if text is None:
-        return [""]
-    if len(text) <= limit:
-        return [text]
-    chunks = []
-    remaining = text
-    sep_candidates = ['\n\n', '\n', '. ']
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
-        window = remaining[:limit]
-        split_idx = -1
-        for sep in sep_candidates:
-            idx = window.rfind(sep)
-            if idx != -1 and idx > split_idx:
-                split_idx = idx + len(sep)
-        if split_idx == -1 or split_idx == 0:
-            split_idx = limit
-        chunks.append(remaining[:split_idx])
-        remaining = remaining[split_idx:]
-    return chunks
-
-
-async def fetch_url_text(session: aiohttp.ClientSession, url: str) -> Optional[str]:
-    try:
-        async with session.get(url, timeout=30) as resp:
-            if resp.status == 200:
-                return await resp.text()
-            else:
-                print(f'Fetch failed {url}: {resp.status} {await resp.text()}')
-                return None
-    except Exception as e:
-        print(f'Fetch exception {url}: {str(e)}')
-        return None
-
-
-async def fetch_knowledge_base():
-    """Fetch Fire SOP, EMS SOP, and roster data."""
-    global _fire_sop_cache, _ems_sop_cache, _roster_cache, _last_fetch_ok
+async def fetch_knowledge():
+    """Fetch knowledge base docs from Google Docs/Sheets."""
     async with aiohttp.ClientSession() as session:
-        fire_text, ems_text, roster_text = await asyncio.gather(
-            fetch_url_text(session, FIRE_SOP_EXPORT_URL),
-            fetch_url_text(session, EMS_SOP_EXPORT_URL),
-            fetch_url_text(session, ROSTER_EXPORT_URL),
-            return_exceptions=True
-        )
-        if fire_text and ems_text and roster_text:
-            _fire_sop_cache = fire_text
-            _ems_sop_cache = ems_text
-            _roster_cache = roster_text
-            _last_fetch_ok = True
-            print('Knowledge base refresh complete (SOPs + Roster).')
+        tasks = [
+            fetch_doc(session, 'fire_sop', FIRE_SOP_EXPORT_URL),
+            fetch_doc(session, 'ems_sop', EMS_SOP_EXPORT_URL),
+            fetch_doc(session, 'roster', ROSTER_EXPORT_URL)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        success_count = sum(1 for r in results if not isinstance(r, Exception))
+        if success_count < len(results):
+            print(f'Knowledge base refresh incomplete: {success_count}/{len(results)} sources loaded')
         else:
-            _last_fetch_ok = False
-            print('Knowledge base refresh incomplete.')
+            print('Knowledge base refreshed successfully')
 
+async def fetch_doc(session, key, url):
+    """Fetch a single document."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status == 200:
+                content = await resp.text()
+                knowledge_base[key] = content
+                print(f'Loaded {key} ({len(content)} chars)')
+            else:
+                print(f'Failed to fetch {key}: HTTP {resp.status}')
+                raise Exception(f'HTTP {resp.status}')
+    except Exception as e:
+        print(f'Error fetching {key} from {url}: {e}')
+        raise
 
-async def periodic_knowledge_refresh():
-    """Periodically refresh knowledge base."""
+async def refresh_knowledge_loop():
+    """Background task to refresh knowledge base periodically."""
     await bot.wait_until_ready()
     while not bot.is_closed():
-        await fetch_knowledge_base()
+        await fetch_knowledge()
         await asyncio.sleep(KNOWLEDGE_REFRESH_SECONDS)
-
-
-def build_knowledge_context() -> Tuple[str, str]:
-    """
-    Returns (context_text, source_links).
-    Context includes SOPs and roster info.
-    """
-    if not _last_fetch_ok:
-        return (
-            'Knowledge base not available. Please try again later.',
-            'Sources temporarily unavailable.'
-        )
-    context = (
-        f"=== Fire SOP ===\n{_fire_sop_cache[:8000]}\n\n"
-        f"=== EMS SOP ===\n{_ems_sop_cache[:8000]}\n\n"
-        f"=== EMS/Fire Roster ===\n{_roster_cache[:4000]}\n\n"
-    )
-    sources = (
-        f"📋 Knowledge Sources:\n"
-        f"• Fire SOP: {FIRE_SOP_VIEW_URL}\n"
-        f"• EMS SOP: {EMS_SOP_VIEW_URL}\n"
-        f"• Roster: {ROSTER_VIEW_URL}"
-    )
-    return (context, sources)
-
-
-async def send_chunked_reply(message: discord.Message, text: str):
-    """Send text as multiple messages if needed."""
-    chunks = chunk_message(text)
-    for chunk in chunks:
-        await message.reply(chunk)
-
-
-# ---------- Welcome channel command and events ----------
-
-@bot.command(name='welcomechannel')
-@commands.has_permissions(manage_guild=True)
-async def set_welcome_channel(ctx: commands.Context):
-    """Designate the current channel as this server's welcome log channel."""
-    if not ctx.guild:
-        return await ctx.send('This command can only be used in a server.')
-
-    welcome_channels[ctx.guild.id] = ctx.channel.id
-    save_welcome_channels()
-
-    await ctx.send(f'✅ Set this channel as the welcome log for "{ctx.guild.name}".')
-
-
-@set_welcome_channel.error
-async def set_welcome_channel_error(ctx: commands.Context, error: commands.CommandError):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send('❌ You need the Manage Server permission to use this command.')
-    else:
-        await ctx.send(f'❌ Error: {error}')
-
-
-def get_welcome_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
-    channel_id = welcome_channels.get(guild.id)
-    if channel_id:
-        return guild.get_channel(channel_id) or None
-    return None
-
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    channel = get_welcome_channel(member.guild)
-    if not channel:
-        return
-    guild_name = member.guild.name
-    embed = discord.Embed(title='Member Joined', description=f'Welcome {member.mention} to {guild_name}!', color=0x57F287)
-    embed.set_thumbnail(url=member.display_avatar.url if member.display_avatar else discord.Embed.Empty)
-    embed.add_field(name='Member', value=f'{member} (ID: {member.id})', inline=False)
-    embed.add_field(name='Server', value=guild_name, inline=False)
-    await channel.send(embed=embed)
-
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    channel = get_welcome_channel(member.guild)
-    if not channel:
-        return
-    guild_name = member.guild.name
-    embed = discord.Embed(title='Member Left', description=f'Goodbye {member.mention}. Thanks for being part of {guild_name}.', color=0xED4245)
-    embed.set_thumbnail(url=member.display_avatar.url if member.display_avatar else discord.Embed.Empty)
-    embed.add_field(name='Member', value=f'{member} (ID: {member.id})', inline=False)
-    embed.add_field(name='Server', value=guild_name, inline=False)
-    await channel.send(embed=embed)
-
-
-# ---------- Existing bot events and commands ----------
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
+    print(f'Bot logged in as {bot.user}')
     load_welcome_channels()
-    await fetch_knowledge_base()
-    bot.loop.create_task(periodic_knowledge_refresh())
-
-
-@bot.command(name='activate')
-async def activate_channel(ctx):
-    """Activate the assistant in this channel."""
-    active_channels.add(ctx.channel.id)
-    await ctx.send('🚒 LSFD Assistant activated in this channel!')
-
-
-@bot.command(name='deactivate')
-async def deactivate_channel(ctx):
-    """Deactivate the assistant in this channel."""
-    active_channels.discard(ctx.channel.id)
-    await ctx.send('🚒 LSFD Assistant deactivated in this channel.')
-
-
-@bot.command(name='sources')
-async def show_sources(ctx):
-    """Show knowledge base sources."""
-    _, sources = build_knowledge_context()
-    await ctx.send(sources)
-
+    print(f'Loaded {len(welcome_channels)} welcome channel mappings')
+    
+    # Sync slash commands
+    try:
+        synced = await bot.tree.sync()
+        print(f'Synced {len(synced)} slash commands')
+    except Exception as e:
+        print(f'Failed to sync commands: {e}')
+    
+    # Initial knowledge fetch
+    await fetch_knowledge()
 
 @bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-    await bot.process_commands(message)
-    if message.channel.id in active_channels and not message.content.startswith('/'):
-        if not PERPLEXITY_API_KEY:
-            await message.reply('⚠️ Perplexity API key not configured.')
-            return
-        async with message.channel.typing():
-            context, sources = build_knowledge_context()
-            enhanced_query = (
-                f"{context}\n\n"
-                f"User Question (FiveM RP context): {message.content}\n\n"
-                f"Answer naturally and helpfully based on the knowledge above."
-            )
-            response = await query_perplexity_knowledge(enhanced_query)
-            if response:
-                await send_chunked_reply(message, response)
-            else:
-                await message.reply('⚠️ Unable to process your query at the moment. Please try again.')
+async def on_member_join(member):
+    """Send welcome message when a member joins."""
+    guild_id = member.guild.id
+    if guild_id in welcome_channels:
+        channel_id = welcome_channels[guild_id]
+        channel = bot.get_channel(channel_id)
+        if channel:
+            await channel.send(f'Welcome {member.mention} to {member.guild.name}!')
 
+@bot.tree.command(name='ask', description='Ask a question about Fire/EMS SOPs or roster')
+async def ask(interaction: discord.Interaction, question: str):
+    """Answer questions using Perplexity API with knowledge base context."""
+    await interaction.response.defer(thinking=True)
+    
+    # Build context from knowledge base
+    context = f"""Fire SOP:
+{knowledge_base['fire_sop'][:3000]}
 
-async def query_perplexity_knowledge(query: str) -> Optional[str]:
-    if not PERPLEXITY_API_KEY:
-        return '⚠️ Perplexity API key not configured.'
-    url = 'https://api.perplexity.ai/chat/completions'
-    headers = {
-        'Authorization': f'Bearer {PERPLEXITY_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    system_content = (
-        'You are the LSFD Assistant, a helpful and knowledgeable first responder assistant for FiveM roleplay. '
-        'You have access to Fire SOPs, EMS SOPs, and the department roster. '
-        'Speak naturally and conversationally—be friendly, supportive, and approachable, like a helpful colleague. '
-        "Draw upon all your knowledge (SOPs and roster) when relevant, but don't focus excessively on procedures—provide comprehensive, practical assistance. "
-        'Focus on FiveM RP context by default. Only mention real-life comparisons if explicitly asked or clearly needed for safety, and keep it brief. '
-        'Use natural, flowing paragraphs—avoid bullet points, numbered lists, or overly formal structures unless specifically appropriate. '
-        "Only use information from the provided knowledge base. If something isn't there, say you can't confirm it. "
-        'Never mention who created you or where your knowledge comes from unless directly asked. '
-        'Never mention you are an AI or language model.'
-    )
-    payload = {
-        'model': 'sonar',
-        'messages': [
-            {'role': 'system', 'content': system_content},
-            {'role': 'user', 'content': query}
-        ],
-        'max_tokens': 800,
-        'temperature': 0.6
-    }
+EMS SOP:
+{knowledge_base['ems_sop'][:3000]}
+
+Roster:
+{knowledge_base['roster'][:2000]}
+"""
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=30) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    content = data['choices'][0]['message']['content']
-                    # Simple branding
-                    content = f"🚒 **LSFD Assistant**\n{content}"
-                    return content
+            payload = {
+                'model': 'llama-3.1-sonar-large-128k-online',
+                'messages': [
+                    {'role': 'system', 'content': f'You are a helpful assistant. Use this knowledge base to answer questions:\n\n{context}'},
+                    {'role': 'user', 'content': question}
+                ]
+            }
+            
+            headers = {
+                'Authorization': f'Bearer {PERPLEXITY_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            
+            async with session.post('https://api.perplexity.ai/chat/completions', 
+                                   json=payload, headers=headers, 
+                                   timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    answer = data['choices'][0]['message']['content']
+                    
+                    # Split long responses
+                    if len(answer) > 2000:
+                        chunks = [answer[i:i+2000] for i in range(0, len(answer), 2000)]
+                        await interaction.followup.send(chunks[0])
+                        for chunk in chunks[1:]:
+                            await interaction.channel.send(chunk)
+                    else:
+                        await interaction.followup.send(answer)
                 else:
-                    error_text = await response.text()
-                    print(f'Perplexity API error: {response.status} - {error_text}')
-                    return None
-    except asyncio.TimeoutError:
-        print('Perplexity API timeout')
-        return None
+                    error_text = await resp.text()
+                    await interaction.followup.send(f'Error: API returned status {resp.status}\n{error_text[:500]}')
     except Exception as e:
-        print(f'Perplexity API exception: {str(e)}')
-        return None
+        await interaction.followup.send(f'Error: {str(e)}')
 
+@bot.tree.command(name='roster', description='View the current roster')
+async def roster(interaction: discord.Interaction):
+    """Display the roster link."""
+    await interaction.response.send_message(
+        f'View the roster here: {ROSTER_VIEW_URL}\n\nCached roster data ({len(knowledge_base["roster"])} chars)'
+    )
 
+@bot.tree.command(name='firesop', description='View Fire SOP document')
+async def firesop(interaction: discord.Interaction):
+    """Display the Fire SOP link."""
+    await interaction.response.send_message(f'Fire SOP: {FIRE_SOP_VIEW_URL}')
+
+@bot.tree.command(name='emssop', description='View EMS SOP document')
+async def emssop(interaction: discord.Interaction):
+    """Display the EMS SOP link."""
+    await interaction.response.send_message(f'EMS SOP: {EMS_SOP_VIEW_URL}')
+
+@bot.tree.command(name='welcomechannel', description='Set the channel for welcome messages')
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def welcomechannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    """Set welcome channel for this server."""
+    guild_id = interaction.guild.id
+    welcome_channels[guild_id] = channel.id
+    save_welcome_channels()
+    await interaction.response.send_message(f'Welcome channel set to {channel.mention}')
+
+@welcomechannel.error
+async def welcomechannel_error(interaction: discord.Interaction, error):
+    if isinstance(error, discord.app_commands.MissingPermissions):
+        await interaction.response.send_message('You need Administrator permission to use this command.', ephemeral=True)
+
+# Start the bot
 if __name__ == '__main__':
     if not DISCORD_TOKEN:
-        print(f'ERROR: {discord_token_env} environment variable not set!')
-        exit(1)
-    print('Starting Los Santos Fire Department Assistant (LSFD Assistant)...')
+        raise ValueError(f'Missing {discord_token_env} environment variable')
+    if not PERPLEXITY_API_KEY:
+        raise ValueError('Missing PERPLEXITY_API_KEY environment variable')
+    
+    # Start background task
+    bot.loop.create_task(refresh_knowledge_loop())
+    
+    # Run the bot
     bot.run(DISCORD_TOKEN)
