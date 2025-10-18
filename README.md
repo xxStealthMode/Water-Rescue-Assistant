@@ -1,11 +1,9 @@
 # Los Santos Fire Department Assistant (LSFD Assistant) 🚒
 
 ## Overview
-
 The Los Santos Fire Department Assistant is an AI-powered Discord bot designed to provide comprehensive guidance and support for fire service, emergency medical services (EMS), and rescue operations. Built with Discord.py and powered by Perplexity AI, this assistant offers real-time access to standard operating procedures (SOPs), protocols, and emergency response information.
 
 ## Features
-
 ### 🔥 Fire Services
 - Fire suppression tactics and strategies
 - Firefighting SOPs and best practices
@@ -38,7 +36,7 @@ The Los Santos Fire Department Assistant is an AI-powered Discord bot designed t
 ### `/activate`
 Activates the LSFD Assistant in the current channel. Requires "Manage Channels" permission.
 
-**Example:**
+Example:
 ```
 /activate
 ```
@@ -46,122 +44,55 @@ Activates the LSFD Assistant in the current channel. Requires "Manage Channels" 
 ### `/deactivate`
 Deactivates the LSFD Assistant in the current channel. Requires "Manage Channels" permission.
 
-**Example:**
+Example:
 ```
 /deactivate
 ```
 
-### `/help`
-Displays comprehensive help information about available commands and capabilities.
+### `/sources`
+Displays links to the knowledge base sources (Fire SOP, EMS SOP, and Roster).
 
-**Example:**
+Example:
 ```
-/help
+/sources
 ```
+
+### `/welcomechannel`
+Designate the current channel as the server's welcome log channel. When set, the bot will send join and leave embeds with welcome/goodbye messages that include the server name whenever members join or leave the server.
+
+- Permissions required: Manage Server (Manage Guild)
+- Scope: Per-guild. Each server can set its own welcome channel.
+- Persistence: The mapping of guild_id -> channel_id is stored in `welcome_channels.json`.
+
+Examples:
+```
+/welcomechannel
+```
+
+The bot will respond:
+```
+✅ Set this channel as the welcome log for "<Your Server Name>".
+```
+
+Once configured, the bot will automatically post embeds in that channel on member join/leave with:
+- Member mention and ID
+- Server name
+- Member avatar as thumbnail
 
 ## Usage
-
 1. **Activate the Bot**: Use `/activate` in any channel where you want the assistant to respond
-2. **Ask Questions**: Simply mention the bot or use keywords related to fire, EMS, or rescue operations
-3. **Get Instant Answers**: The bot will query Perplexity AI and provide detailed, accurate responses based on standard operating procedures
+2. **Ask Questions**: Simply type your question in an activated channel; the bot will reply
+3. **Welcome Logs**: Use `/welcomechannel` in the channel where you want join/leave embeds to appear
 
-### Keywords That Trigger Responses
-The bot automatically responds when it detects these keywords in messages:
-- Fire-related: `fire`, `firefighter`, `hazmat`, `incident`
-- EMS-related: `ems`, `medical`, `paramedic`, `emergency`
-- Rescue-related: `rescue`, `water`, `drowning`, `safety`
-- General: `help`, `sop`, `protocol`
-
-### Example Questions
-
-- "What are the fire safety protocols for structure fires?"
-- "How do I perform CPR during a cardiac emergency?"
-- "What are the water rescue procedures for swift water?"
-- "What's the protocol for hazmat incidents?"
-- "What equipment is needed for high angle rescue?"
-- "How should we approach a vehicle extrication?"
-
-## Setup & Deployment
-
-### Prerequisites
-- Python 3.9+
-- Discord Bot Token
-- Perplexity API Key
-
-### Environment Variables
-
-```bash
-DISCORD_BOT_TOKEN=your_discord_bot_token_here
-PERPLEXITY_API_KEY=your_perplexity_api_key_here
-```
-
-### Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/xxStealthMode/Water-Rescue-Assistant.git
-cd Water-Rescue-Assistant
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Set environment variables (create `.env` file or set in your deployment platform)
-
-4. Run the bot:
-```bash
-python main.py
-```
-
-### Railway Deployment
-
-This bot is configured for deployment on Railway:
-
-1. Fork this repository
-2. Connect your Railway account to GitHub
-3. Create a new project from your forked repository
-4. Add environment variables:
+## Setup
+1. Create a Discord bot and invite it with the required intents and permissions
+2. Set environment variables:
    - `DISCORD_BOT_TOKEN`
    - `PERPLEXITY_API_KEY`
-5. Deploy!
+3. Ensure the bot has the following Gateway Intents enabled in the Developer Portal:
+   - Server Members Intent (for join/leave events)
+   - Message Content (optional for assistant replies)
 
-The bot will automatically start and sync slash commands with Discord.
-
-## Technical Details
-
-### Dependencies
-- `discord.py` - Discord API wrapper
-- `aiohttp` - Async HTTP client for API requests
-- `python-dotenv` - Environment variable management (for local development)
-
-### Architecture
-- **Bot Framework**: Discord.py with slash commands
-- **AI Backend**: Perplexity AI (Sonar model)
-- **State Management**: In-memory channel tracking
-- **Permissions**: Channel-based activation with admin controls
-
-### AI System Prompt
-The bot uses an enhanced system prompt that instructs the AI to respond as an expert LSFD Assistant with knowledge of:
-- Fire service standard operating procedures
-- EMS protocols and medical emergency procedures
-- Water and technical rescue operations
-- HAZMAT response and safety protocols
-- NFPA standards and best practices
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or improvements.
-
-## License
-
-This project is open source and available for use by fire departments, emergency services, and public safety organizations.
-
-## Support
-
-For questions, issues, or support, please open an issue on GitHub or contact the repository maintainer.
-
----
-
-**Note**: This bot provides informational guidance based on standard fire service and EMS practices. Always follow your department's specific SOPs and protocols. For immediate life-threatening emergencies, always call 911.
+## Notes
+- SOPs and roster are periodically refreshed every 15 minutes (configurable via `SOP_REFRESH_SECONDS`).
+- The assistant replies in activated channels and uses Perplexity for answers based on the provided knowledge base.
